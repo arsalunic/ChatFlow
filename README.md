@@ -29,8 +29,8 @@ cd ..
 # run both apps
 npm run dev
 ```
-- API: http://localhost:5000
-- Client: http://localhost:3000
+- API: http://localhost:3000
+- Client: http://localhost:3001
 
 ## Demo Accounts
 Users: alice, bob, charlie, diana, eric  
