@@ -174,6 +174,33 @@ router.post("/:id/delivered", authMiddleware, async (req: AuthRequest, res) => {
   res.json({ ok: true });
 });
 
+// GET /conversations/:id/messages/search?q=term - search within one conversation
+router.get(
+  "/:id/messages/search",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    const convId = new mongoose.Types.ObjectId(req.params.id);
+    const q = String(req.query.q || "").toLowerCase();
+    if (!q) return res.json([]);
+
+    const messages = await Message.find({ conversationId: convId })
+      .limit(500)
+      .lean();
+
+    const shaped = messages
+      .map((m) => ({
+        _id: m._id,
+        senderId: m.senderId,
+        createdAt: m.createdAt,
+        status: m.status,
+        text: decrypt(m.textEncrypted),
+      }))
+      .filter((m) => m.text.toLowerCase().includes(q));
+
+    res.json(shaped);
+  }
+);
+
 // GET /conversations/search/all?q=term - naive search (decrypt messages server-side)
 router.get("/search/all", authMiddleware, async (req: AuthRequest, res) => {
   const q = String(req.query.q || "").toLowerCase();

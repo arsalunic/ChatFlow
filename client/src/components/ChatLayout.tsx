@@ -1,35 +1,34 @@
 import React, { useEffect, useRef, useState } from "react";
-import api from "../services/api";
+import api, { searchMessages } from "../services/api";
 import { io } from "socket.io-client";
 
-/**
- * Main WhatsApp-like chat layout: left convo list, right message pane.
- * Includes presence indicators, message status (sent/delivered), and typing indicator.
- */
 export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
   const [convs, setConvs] = useState<any[]>([]);
   const [sel, setSel] = useState<any>();
   const [msgs, setMsgs] = useState<any[]>([]);
   const [text, setText] = useState("");
-  const [q, setQ] = useState("");
+  const [chatSearch, setChatSearch] = useState("");
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const socketRef = useRef<any>();
 
   const username = localStorage.getItem("username") || "";
 
-  // Load conversations list and default selection
+  // Load conversations
   const loadConvs = async () => {
     const r = await api.get("/conversations");
     setConvs(r.data);
     if (!sel && r.data[0]) selectConv(r.data[0]);
   };
 
+  // Select a conversation
   const selectConv = async (c: any) => {
     setSel(c);
     const r = await api.get(`/conversations/${c._id}/messages`);
     setMsgs(r.data);
+    setChatSearch(""); // reset search input
   };
 
+  // Send message
   const send = async () => {
     if (!text.trim() || !sel) return;
     await api.post(`/conversations/${sel._id}/messages`, { text });
@@ -37,6 +36,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     await selectConv(sel);
   };
 
+  // Start a new chat
   const newChat = async () => {
     const who = prompt(
       "Start a chat with username(s), comma-separated. For group, include 2+."
@@ -62,19 +62,29 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     if (found) await selectConv(found);
   };
 
+  // Mark messages delivered
   const markDelivered = async () => {
     if (sel) await api.post(`/conversations/${sel._id}/delivered`);
   };
 
-  const searchAll = async () => {
-    if (!q) return;
-    const r = await api.get(
-      `/conversations/search/all?q=${encodeURIComponent(q)}`
-    );
-    alert(`Found ${r.data.length} messages. (Teaching demo: global search)`);
+  // Search messages inside current conversation
+  const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const q = e.target.value;
+    setChatSearch(q);
+
+    if (!sel) return;
+
+    if (!q) {
+      // If search cleared, load full chat history
+      const r = await api.get(`/conversations/${sel._id}/messages`);
+      setMsgs(r.data);
+      return;
+    }
+
+    const results = await searchMessages(sel._id, q);
+    setMsgs(results);
   };
 
-  // Handle typing input
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setText(e.target.value);
     if (socketRef.current && sel) {
@@ -82,23 +92,23 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     }
   };
 
-  // Setup socket for presence, new messages, and typing events
+  // Socket.io setup
   useEffect(() => {
     const token = localStorage.getItem("token");
     const s = io("http://localhost:3000", { path: "/ws", auth: { token } });
     socketRef.current = s;
 
-    s.on("presence:update", async (_p: any) => {
+    s.on("presence:update", async () => {
       await loadConvs();
     });
 
-    s.on("message:new", async (_payload: any) => {
+    s.on("message:new", async () => {
       if (sel) await selectConv(sel);
       await loadConvs();
     });
 
     s.on("typing", (typingUsername: string) => {
-      if (typingUsername === username) return; // ignore self
+      if (typingUsername === username) return;
       setTypingUsers((prev) => {
         if (!prev.includes(typingUsername)) return [...prev, typingUsername];
         return prev;
@@ -118,6 +128,17 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     markDelivered();
   }, [sel, msgs.length]);
 
+  // Highlight search matches
+  const highlightText = (text: string) => {
+    if (!chatSearch) return text;
+    const regex = new RegExp(`(${chatSearch})`, "gi");
+    return text
+      .split(regex)
+      .map((part, idx) =>
+        regex.test(part) ? <mark key={idx}>{part}</mark> : part
+      );
+  };
+
   return (
     <div className="app">
       <div className="sidebar">
@@ -136,14 +157,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
             </button>
           </div>
         </div>
-        <div className="search">
-          <input
-            placeholder="Search (global)"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && searchAll()}
-          />
-        </div>
+
         <div className="list">
           {convs.map((c) => (
             <div key={c._id} className="item" onClick={() => selectConv(c)}>
@@ -166,6 +180,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
           ))}
         </div>
       </div>
+
       <div className="chat">
         <div className="chat-header">
           <div>
@@ -179,14 +194,18 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
             </strong>
           </div>
           {sel && (
-            <div className="badge">
-              {sel.participants
-                .map((p: any) => `${p.name} ${p.online ? "●" : "○"}`)
-                .join(" · ")}
+            <div className="search" style={{ marginTop: 4 }}>
+              <input
+                placeholder="Search in chat"
+                value={chatSearch}
+                onChange={handleSearchChange}
+              />
             </div>
           )}
         </div>
+
         <div className="messages">
+          {msgs.length === 0 && <div className="badge">No messages</div>}
           {msgs.map((m) => (
             <div
               key={m._id}
@@ -198,7 +217,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
                   : "")
               }
             >
-              <div>{m.text}</div>
+              <div>{highlightText(m.text)}</div>
               <div className="badge">
                 {new Date(m.createdAt).toLocaleTimeString()} · {m.status}
               </div>
