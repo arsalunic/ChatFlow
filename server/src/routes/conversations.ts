@@ -226,4 +226,46 @@ router.get("/search/all", authMiddleware, async (req: AuthRequest, res) => {
   res.json(results);
 });
 
+// POST /conversations/:id/messages/:msgId/reactions
+router.post(
+  "/:id/messages/:msgId/react",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    const { emoji } = req.body;
+    const userId = req.userId;
+    const msgId = req.params.msgId;
+
+    if (!emoji) return res.status(400).json({ error: "Emoji required" });
+
+    const msg = await Message.findById(msgId);
+    if (!msg) return res.status(404).json({ error: "Message not found" });
+
+    // Check if user already reacted with the same emoji → remove
+    const existingIndex = msg.reactions?.findIndex(
+      (r) => r.userId.toString() === userId && r.emoji === emoji
+    );
+
+    if (existingIndex !== undefined && existingIndex > -1) {
+      msg.reactions!.splice(existingIndex, 1);
+    } else {
+      msg.reactions = msg.reactions || [];
+      msg.reactions.push({
+        userId: new mongoose.Types.ObjectId(userId),
+        emoji,
+      });
+    }
+
+    await msg.save();
+
+    // Emit updated message
+    try {
+      getIO()
+        .to(req.params.id)
+        .emit("message:react", { msgId, reactions: msg.reactions });
+    } catch {}
+
+    res.json({ msgId, reactions: msg.reactions });
+  }
+);
+
 export default router;

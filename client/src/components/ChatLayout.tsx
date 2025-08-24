@@ -9,26 +9,42 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
   const [text, setText] = useState("");
   const [chatSearch, setChatSearch] = useState("");
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
-  const socketRef = useRef<any>();
+  const [showReactionsFor, setShowReactionsFor] = useState<string | null>(null);
 
+  const socketRef = useRef<any>();
   const username = localStorage.getItem("username") || "";
 
-  // Load conversations
+  // --- Utility: aggregate reactions by emoji ---
+  const aggregateReactions = (reactions: any[]) => {
+    const map: Record<
+      string,
+      { emoji: string; count: number; reacted: boolean }
+    > = {};
+    reactions?.forEach((r) => {
+      if (!map[r.emoji])
+        map[r.emoji] = { emoji: r.emoji, count: 0, reacted: false };
+      map[r.emoji].count += 1;
+      if (r.userId === username) map[r.emoji].reacted = true;
+    });
+    return Object.values(map);
+  };
+
+  // --- Load conversations ---
   const loadConvs = async () => {
     const r = await api.get("/conversations");
     setConvs(r.data);
     if (!sel && r.data[0]) selectConv(r.data[0]);
   };
 
-  // Select a conversation
+  // --- Select a conversation ---
   const selectConv = async (c: any) => {
     setSel(c);
     const r = await api.get(`/conversations/${c._id}/messages`);
     setMsgs(r.data);
-    setChatSearch(""); // reset search input
+    setChatSearch("");
   };
 
-  // Send message
+  // --- Send message ---
   const send = async () => {
     if (!text.trim() || !sel) return;
     await api.post(`/conversations/${sel._id}/messages`, { text });
@@ -36,7 +52,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     await selectConv(sel);
   };
 
-  // Start a new chat
+  // --- Start new chat ---
   const newChat = async () => {
     const who = prompt(
       "Start a chat with username(s), comma-separated. For group, include 2+."
@@ -62,20 +78,18 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     if (found) await selectConv(found);
   };
 
-  // Mark messages delivered
+  // --- Mark delivered ---
   const markDelivered = async () => {
     if (sel) await api.post(`/conversations/${sel._id}/delivered`);
   };
 
-  // Search messages inside current conversation
+  // --- Search messages ---
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const q = e.target.value;
     setChatSearch(q);
-
     if (!sel) return;
 
     if (!q) {
-      // If search cleared, load full chat history
       const r = await api.get(`/conversations/${sel._id}/messages`);
       setMsgs(r.data);
       return;
@@ -92,30 +106,67 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     }
   };
 
-  // Socket.io setup
+  // --- React to message ---
+  const reactToMessage = async (msgId: string, emoji: string) => {
+    if (!sel) return;
+
+    // Optimistic UI toggle
+    setMsgs((prev) =>
+      prev.map((m) => {
+        if (m._id !== msgId) return m;
+
+        const userReacted = m.reactions?.some(
+          (r: any) => r.userId === username && r.emoji === emoji
+        );
+        let newReactions;
+
+        if (userReacted) {
+          newReactions = m.reactions.filter(
+            (r: any) => !(r.userId === username && r.emoji === emoji)
+          );
+        } else {
+          newReactions = m.reactions
+            ? [...m.reactions, { userId: username, emoji }]
+            : [{ userId: username, emoji }];
+        }
+
+        return { ...m, reactions: newReactions };
+      })
+    );
+
+    // Send to server
+    await api.post(`/conversations/${sel._id}/messages/${msgId}/react`, {
+      emoji,
+    });
+  };
+
+  // --- Socket.io ---
   useEffect(() => {
     const token = localStorage.getItem("token");
     const s = io("http://localhost:3000", { path: "/ws", auth: { token } });
     socketRef.current = s;
 
-    s.on("presence:update", async () => {
-      await loadConvs();
-    });
-
+    s.on("presence:update", async () => await loadConvs());
     s.on("message:new", async () => {
       if (sel) await selectConv(sel);
       await loadConvs();
     });
+    s.on("message:react", ({ msgId, reactions }: any) => {
+      setMsgs((prev) =>
+        prev.map((m) => (m._id === msgId ? { ...m, reactions } : m))
+      );
+    });
 
     s.on("typing", (typingUsername: string) => {
       if (typingUsername === username) return;
-      setTypingUsers((prev) => {
-        if (!prev.includes(typingUsername)) return [...prev, typingUsername];
-        return prev;
-      });
-      setTimeout(() => {
-        setTypingUsers((prev) => prev.filter((u) => u !== typingUsername));
-      }, 2000);
+      setTypingUsers((prev) =>
+        !prev.includes(typingUsername) ? [...prev, typingUsername] : prev
+      );
+      setTimeout(
+        () =>
+          setTypingUsers((prev) => prev.filter((u) => u !== typingUsername)),
+        2000
+      );
     });
 
     loadConvs();
@@ -128,7 +179,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     markDelivered();
   }, [sel, msgs.length]);
 
-  // Highlight search matches
+  // --- Highlight search matches ---
   const highlightText = (text: string) => {
     if (!chatSearch) return text;
     const regex = new RegExp(`(${chatSearch})`, "gi");
@@ -139,8 +190,12 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
       );
   };
 
+  // --- Quick emoji options ---
+  const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+
   return (
     <div className="app">
+      {/* Sidebar */}
       <div className="sidebar">
         <div className="header">
           <strong>Chats</strong>
@@ -181,88 +236,101 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
         </div>
       </div>
 
+      {/* Chat */}
       <div className="chat">
         <div className="chat-header">
           {sel ? (
             <>
-              {sel.isGroup ? (
-                <>
-                  <strong>{sel.name || "Group Chat"}</strong>
-                  <div style={{ fontSize: "0.9em", marginTop: 4 }}>
-                    Members:{" "}
-                    {sel.participants.map((p: any) => (
-                      <span key={p._id} style={{ marginRight: 8 }}>
-                        {p.name || p.username}
-                        <span
-                          style={{
-                            display: "inline-block",
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            marginLeft: 4,
-                            backgroundColor: p.online ? "green" : "gray",
-                          }}
-                        />
-                      </span>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <>
-                  {sel.participants
-                    .filter((p: any) => p.username !== username)
-                    .map((p: any) => (
-                      <div key={p._id}>
-                        <strong>{p.name || p.username}</strong>
-                        <span
-                          style={{
-                            display: "inline-block",
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            marginLeft: 6,
-                            backgroundColor: p.online ? "green" : "gray",
-                          }}
-                        />
-                      </div>
-                    ))}
-                </>
+              <strong>
+                {sel.isGroup
+                  ? sel.name || "Group Chat"
+                  : sel.participants.find((p: any) => p.username !== username)
+                      ?.name || "Direct chat"}
+              </strong>
+              {sel.isGroup && (
+                <div style={{ fontSize: "0.9em", marginTop: 4 }}>
+                  Members:{" "}
+                  {sel.participants.map((p: any) => (
+                    <span key={p._id} style={{ marginRight: 8 }}>
+                      {p.name || p.username}
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          marginLeft: 4,
+                          backgroundColor: p.online ? "green" : "gray",
+                        }}
+                      />
+                    </span>
+                  ))}
+                </div>
+              )}
+              {sel && (
+                <div className="search" style={{ marginTop: 4 }}>
+                  <input
+                    placeholder="Search in chat"
+                    value={chatSearch}
+                    onChange={handleSearchChange}
+                  />
+                </div>
               )}
             </>
           ) : (
             <strong>Select a chat</strong>
           )}
-
-          {sel && (
-            <div className="search" style={{ marginTop: 4 }}>
-              <input
-                placeholder="Search in chat"
-                value={chatSearch}
-                onChange={handleSearchChange}
-              />
-            </div>
-          )}
         </div>
 
         <div className="messages">
           {msgs.length === 0 && <div className="badge">No messages</div>}
-          {msgs.map((m) => (
-            <div
-              key={m._id}
-              className={
-                "msg " +
-                (sel?.participants?.find((p: any) => p.username === username)
-                  ?._id === m.senderId
-                  ? "mine"
-                  : "")
-              }
-            >
-              <div>{highlightText(m.text)}</div>
-              <div className="badge">
-                {new Date(m.createdAt).toLocaleTimeString()} · {m.status}
+          {msgs.map((m) => {
+            const aggregated = aggregateReactions(m.reactions);
+            const isMine =
+              sel?.participants?.find((p: any) => p.username === username)
+                ?._id === m.senderId;
+
+            return (
+              <div
+                key={m._id}
+                className={"msg " + (isMine ? "mine" : "")}
+                onMouseEnter={() => setShowReactionsFor(m._id)}
+                onMouseLeave={() => setShowReactionsFor(null)}
+              >
+                <div>{highlightText(m.text)}</div>
+                <div className="badge">
+                  {new Date(m.createdAt).toLocaleTimeString()} · {m.status}
+                </div>
+
+                <div className="reactions">
+                  {/* Aggregated reactions */}
+                  {aggregated.map((r) => (
+                    <span
+                      key={r.emoji}
+                      className={"reaction" + (r.reacted ? " reacted" : "")}
+                      onClick={() => reactToMessage(m._id, r.emoji)}
+                    >
+                      {r.emoji} {r.count}
+                    </span>
+                  ))}
+
+                  {/* Dynamic emoji picker */}
+                  {showReactionsFor === m._id && (
+                    <div className="emoji-picker">
+                      {EMOJIS.map((e) => (
+                        <button
+                          key={e}
+                          onClick={() => reactToMessage(m._id, e)}
+                        >
+                          {e}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {typingUsers.length > 0 && (
