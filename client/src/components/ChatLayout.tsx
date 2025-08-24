@@ -183,16 +183,56 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
 
       <div className="chat">
         <div className="chat-header">
-          <div>
-            <strong>
-              {sel
-                ? sel.isGroup
-                  ? sel.name
-                  : sel.participants.find((p: any) => p.username !== username)
-                      ?.name || "Direct chat"
-                : "Select a chat"}
-            </strong>
-          </div>
+          {sel ? (
+            <>
+              {sel.isGroup ? (
+                <>
+                  <strong>{sel.name || "Group Chat"}</strong>
+                  <div style={{ fontSize: "0.9em", marginTop: 4 }}>
+                    Members:{" "}
+                    {sel.participants.map((p: any) => (
+                      <span key={p._id} style={{ marginRight: 8 }}>
+                        {p.name || p.username}
+                        <span
+                          style={{
+                            display: "inline-block",
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            marginLeft: 4,
+                            backgroundColor: p.online ? "green" : "gray",
+                          }}
+                        />
+                      </span>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {sel.participants
+                    .filter((p: any) => p.username !== username)
+                    .map((p: any) => (
+                      <div key={p._id}>
+                        <strong>{p.name || p.username}</strong>
+                        <span
+                          style={{
+                            display: "inline-block",
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            marginLeft: 6,
+                            backgroundColor: p.online ? "green" : "gray",
+                          }}
+                        />
+                      </div>
+                    ))}
+                </>
+              )}
+            </>
+          ) : (
+            <strong>Select a chat</strong>
+          )}
+
           {sel && (
             <div className="search" style={{ marginTop: 4 }}>
               <input
