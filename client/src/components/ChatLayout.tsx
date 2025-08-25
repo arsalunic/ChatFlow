@@ -10,11 +10,13 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
   const [chatSearch, setChatSearch] = useState("");
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [showReactionsFor, setShowReactionsFor] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<any>(null);
 
   const socketRef = useRef<any>();
   const username = localStorage.getItem("username") || "";
 
-  // --- Utility: aggregate reactions by emoji ---
+  const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+
   const aggregateReactions = (reactions: any[]) => {
     const map: Record<
       string,
@@ -29,14 +31,12 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     return Object.values(map);
   };
 
-  // --- Load conversations ---
   const loadConvs = async () => {
     const r = await api.get("/conversations");
     setConvs(r.data);
     if (!sel && r.data[0]) selectConv(r.data[0]);
   };
 
-  // --- Select a conversation ---
   const selectConv = async (c: any) => {
     setSel(c);
     const r = await api.get(`/conversations/${c._id}/messages`);
@@ -44,15 +44,17 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     setChatSearch("");
   };
 
-  // --- Send message ---
   const send = async () => {
     if (!text.trim() || !sel) return;
-    await api.post(`/conversations/${sel._id}/messages`, { text });
+    await api.post(`/conversations/${sel._id}/messages`, {
+      text,
+      parentMessageId: replyingTo?._id,
+    });
     setText("");
+    setReplyingTo(null);
     await selectConv(sel);
   };
 
-  // --- Start new chat ---
   const newChat = async () => {
     const who = prompt(
       "Start a chat with username(s), comma-separated. For group, include 2+."
@@ -78,23 +80,19 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     if (found) await selectConv(found);
   };
 
-  // --- Mark delivered ---
   const markDelivered = async () => {
     if (sel) await api.post(`/conversations/${sel._id}/delivered`);
   };
 
-  // --- Search messages ---
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const q = e.target.value;
     setChatSearch(q);
     if (!sel) return;
-
     if (!q) {
       const r = await api.get(`/conversations/${sel._id}/messages`);
       setMsgs(r.data);
       return;
     }
-
     const results = await searchMessages(sel._id, q);
     setMsgs(results);
   };
@@ -106,20 +104,16 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     }
   };
 
-  // --- React to message ---
   const reactToMessage = async (msgId: string, emoji: string) => {
     if (!sel) return;
 
-    // Optimistic UI toggle
     setMsgs((prev) =>
       prev.map((m) => {
         if (m._id !== msgId) return m;
-
         const userReacted = m.reactions?.some(
           (r: any) => r.userId === username && r.emoji === emoji
         );
         let newReactions;
-
         if (userReacted) {
           newReactions = m.reactions.filter(
             (r: any) => !(r.userId === username && r.emoji === emoji)
@@ -129,18 +123,25 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
             ? [...m.reactions, { userId: username, emoji }]
             : [{ userId: username, emoji }];
         }
-
         return { ...m, reactions: newReactions };
       })
     );
 
-    // Send to server
     await api.post(`/conversations/${sel._id}/messages/${msgId}/react`, {
       emoji,
     });
   };
 
-  // --- Socket.io ---
+  const highlightText = (text: string) => {
+    if (!chatSearch) return text;
+    const regex = new RegExp(`(${chatSearch})`, "gi");
+    return text
+      .split(regex)
+      .map((part, idx) =>
+        regex.test(part) ? <mark key={idx}>{part}</mark> : part
+      );
+  };
+
   useEffect(() => {
     const token = localStorage.getItem("token");
     const s = io("http://localhost:3000", { path: "/ws", auth: { token } });
@@ -151,12 +152,11 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
       if (sel) await selectConv(sel);
       await loadConvs();
     });
-    s.on("message:react", ({ msgId, reactions }: any) => {
+    s.on("message:react", ({ msgId, reactions }: any) =>
       setMsgs((prev) =>
         prev.map((m) => (m._id === msgId ? { ...m, reactions } : m))
-      );
-    });
-
+      )
+    );
     s.on("typing", (typingUsername: string) => {
       if (typingUsername === username) return;
       setTypingUsers((prev) =>
@@ -170,28 +170,12 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     });
 
     loadConvs();
-    return () => {
-      s.disconnect();
-    };
+    return () => s.disconnect();
   }, [sel]);
 
   useEffect(() => {
     markDelivered();
   }, [sel, msgs.length]);
-
-  // --- Highlight search matches ---
-  const highlightText = (text: string) => {
-    if (!chatSearch) return text;
-    const regex = new RegExp(`(${chatSearch})`, "gi");
-    return text
-      .split(regex)
-      .map((part, idx) =>
-        regex.test(part) ? <mark key={idx}>{part}</mark> : part
-      );
-  };
-
-  // --- Quick emoji options ---
-  const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 
   return (
     <div className="app">
@@ -212,7 +196,6 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
             </button>
           </div>
         </div>
-
         <div className="list">
           {convs.map((c) => (
             <div key={c._id} className="item" onClick={() => selectConv(c)}>
@@ -297,62 +280,91 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
                 onMouseEnter={() => setShowReactionsFor(m._id)}
                 onMouseLeave={() => setShowReactionsFor(null)}
               >
+                {m.parent && (
+                  <div
+                    className="parent-msg"
+                    style={{
+                      borderLeft: "2px solid gray",
+                      paddingLeft: 6,
+                      marginBottom: 4,
+                    }}
+                  >
+                    <small>Replying to:</small>
+                    <div className="parent-text">
+                      {highlightText(m.parent.text)}
+                    </div>
+                  </div>
+                )}
                 <div>{highlightText(m.text)}</div>
                 <div className="badge">
                   {new Date(m.createdAt).toLocaleTimeString()} · {m.status}
                 </div>
 
                 <div className="reactions">
-                  {/* Aggregated reactions */}
                   {aggregated.map((r) => (
                     <span
                       key={r.emoji}
-                      className={"reaction" + (r.reacted ? " reacted" : "")}
+                      className={"reaction" + (r.reacted ? " mine" : "")}
                       onClick={() => reactToMessage(m._id, r.emoji)}
                     >
                       {r.emoji} {r.count}
                     </span>
                   ))}
-
-                  {/* Dynamic emoji picker */}
                   {showReactionsFor === m._id && (
-                    <div className="emoji-picker">
+                    <span className="reaction-picker">
                       {EMOJIS.map((e) => (
-                        <button
-                          key={e}
-                          onClick={() => reactToMessage(m._id, e)}
-                        >
+                        <span key={e} onClick={() => reactToMessage(m._id, e)}>
                           {e}
-                        </button>
+                        </span>
                       ))}
-                    </div>
+                    </span>
                   )}
                 </div>
+
+                {!isMine && (
+                  <button onClick={() => setReplyingTo(m)}>Reply</button>
+                )}
               </div>
             );
           })}
         </div>
 
         {typingUsers.length > 0 && (
-          <div className="typing-indicator">
-            {typingUsers.join(", ")} {typingUsers.length > 1 ? "are" : "is"}{" "}
-            typing...
-          </div>
+          <div className="typing">{typingUsers.join(", ")} typing...</div>
         )}
 
-        {sel && (
-          <div className="composer">
-            <input
-              placeholder="Type a message"
-              value={text}
-              onChange={handleInputChange}
-              onKeyDown={(e) => e.key === "Enter" && send()}
-            />
-            <button className="button" onClick={send}>
-              Send
-            </button>
-          </div>
-        )}
+        <div
+          className="chat-input"
+          style={{ display: "flex", padding: "12px", alignItems: "center" }}
+        >
+          {replyingTo && (
+            <div className="reply-preview" style={{ marginBottom: 6 }}>
+              Replying to: {replyingTo.text}{" "}
+              <button onClick={() => setReplyingTo(null)}>x</button>
+            </div>
+          )}
+          <input
+            value={text}
+            onChange={handleInputChange}
+            placeholder="Type a message"
+            onKeyDown={(e) => e.key === "Enter" && send()}
+            style={{
+              flex: 1,
+              padding: "10px 12px",
+              borderRadius: 6,
+              border: "1px solid #ccc",
+              fontSize: 16,
+              minHeight: 40, // taller input
+            }}
+          />
+          <button
+            className="button primary"
+            onClick={send}
+            style={{ marginLeft: 8, padding: "10px 16px", fontSize: 16 }}
+          >
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );

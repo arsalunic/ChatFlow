@@ -14,6 +14,7 @@ export interface IMessage extends Document {
   textEncrypted: string;
   status: MessageStatus;
   createdAt: Date;
+  parentMessageId?: Types.ObjectId | null;
   reactions?: IMessageReaction[];
 }
 
@@ -27,6 +28,11 @@ const MessageSchema = new Schema<IMessage>(
     senderId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     textEncrypted: { type: String, required: true },
     status: { type: String, enum: ["sent", "delivered"], default: "sent" },
+    parentMessageId: {
+      type: Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
     reactions: [
       {
         userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
