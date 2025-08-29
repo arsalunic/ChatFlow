@@ -4,6 +4,7 @@ import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import User from "../models/User.js";
 import mongoose from "mongoose";
+import { Types } from "mongoose";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import { addUsersToRoom, getIO } from "../websocket.js";
 
@@ -92,8 +93,8 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   const conv = await Conversation.create({ participants: ids, isGroup, name });
 
   addUsersToRoom(
-    ids.map((i) => i.toString()),
-    conv._id.toString()
+    ids.map((i) => (i as Types.ObjectId).toString()),
+    (conv._id as Types.ObjectId).toString()
   );
 
   const populated = await Conversation.findById(conv._id)
@@ -104,7 +105,9 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     .lean();
 
   try {
-    getIO().to(conv._id.toString()).emit("conversation:new", populated);
+    getIO()
+      .to((conv._id as Types.ObjectId).toString())
+      .emit("conversation:new", populated);
   } catch (e) {
     console.warn("getIO not available when emitting conversation:new", e);
   }
@@ -170,9 +173,9 @@ router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
   const msg = await Message.create(msgData);
 
   const payload = {
-    _id: msg._id.toString(),
-    conversationId: convId.toString(),
-    senderId: msg.senderId.toString(),
+    _id: (msg._id as Types.ObjectId).toString(),
+    conversationId: (convId as Types.ObjectId).toString(),
+    senderId: (msg.senderId as Types.ObjectId).toString(),
     createdAt: msg.createdAt,
     status: msg.status,
     text,
