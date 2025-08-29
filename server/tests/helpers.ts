@@ -1,19 +1,52 @@
-import { MongoMemoryServer } from 'mongodb-memory-server';
-import mongoose from 'mongoose';
+import { MongoMemoryServer } from "mongodb-memory-server";
+import mongoose from "mongoose";
 
-let mongod: MongoMemoryServer | null = null;
+let mongoServer: MongoMemoryServer | undefined;
 
-/** Spin up in-memory Mongo for Jest. */
 export const setupTestDB = async () => {
-  mongod = await MongoMemoryServer.create();
-  const uri = mongod.getUri();
-  await mongoose.connect(uri);
-  process.env.JWT_SECRET = 'testsecret';
-  process.env.ENC_KEY = '0123456789abcdef0123456789abcdef';
-  return uri;
+  try {
+    if (!mongoServer) {
+      mongoServer = await MongoMemoryServer.create();
+    }
+
+    const mongoUri = mongoServer.getUri();
+
+    if (mongoose.connection.readyState === 0) {
+      await mongoose.connect(mongoUri);
+      console.log("Test database connected successfully");
+    }
+  } catch (error) {
+    console.error("Failed to setup test database:", error);
+    throw error;
+  }
 };
 
 export const teardownTestDB = async () => {
-  await mongoose.disconnect();
-  if (mongod) await mongod.stop();
+  try {
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
+
+    if (mongoServer) {
+      await mongoServer.stop();
+      mongoServer = undefined;
+    }
+
+    console.log("Test database cleaned up successfully");
+  } catch (error) {
+    console.error("Failed to cleanup test database:", error);
+  }
+};
+
+export const clearDB = async () => {
+  try {
+    if (mongoose.connection.db) {
+      const collections = await mongoose.connection.db.collections();
+      for (let collection of collections) {
+        await collection.deleteMany({});
+      }
+    }
+  } catch (error) {
+    console.error("Failed to clear database:", error);
+  }
 };
