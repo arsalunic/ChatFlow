@@ -6,7 +6,7 @@ import User from "../models/User.js";
 import mongoose from "mongoose";
 import { Types } from "mongoose";
 import { decrypt, encrypt } from "../utils/crypto.js";
-import { addUsersToRoom, getIO } from "../websocket.js"; // <--- import helpers
+import { addUsersToRoom, getIO } from "../websocket.js";
 
 const router = Router();
 
@@ -92,13 +92,11 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
 
   const conv = await Conversation.create({ participants: ids, isGroup, name });
 
-  // make currently-connected sockets join the new room
   addUsersToRoom(
     ids.map((i) => (i as Types.ObjectId).toString()),
     (conv._id as Types.ObjectId).toString()
   );
 
-  // populate participants for client convenience
   const populated = await Conversation.findById(conv._id)
     .populate({
       path: "participants",
@@ -106,48 +104,74 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     })
     .lean();
 
-  // emit new conversation to participants (they will update list without reload)
   try {
     getIO()
       .to((conv._id as Types.ObjectId).toString())
       .emit("conversation:new", populated);
   } catch (e) {
-    // getIO may not be available during tests / startup; ignore safely
     console.warn("getIO not available when emitting conversation:new", e);
   }
 
   res.status(201).json(populated);
 });
 
-// GET /conversations/:id/messages - history
+// GET /conversations/:id/messages - history (with parent message for replies)
 router.get("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
   const convId = new mongoose.Types.ObjectId(req.params.id);
   const messages = await Message.find({ conversationId: convId })
     .sort({ createdAt: 1 })
     .lean();
+
+  // Fetch parent messages for replies
+  const parentIds = messages
+    .filter((m) => m.parentMessageId)
+    .map((m) => m.parentMessageId);
+  const parents =
+    parentIds.length > 0
+      ? await Message.find({ _id: { $in: parentIds } }).lean()
+      : [];
+  const parentMap = new Map(
+    parents.map((p) => [
+      p._id.toString(),
+      { ...p, text: decrypt(p.textEncrypted) },
+    ])
+  );
+
   const shaped = messages.map((m) => ({
     _id: m._id,
     senderId: m.senderId,
     createdAt: m.createdAt,
     status: m.status,
     text: decrypt(m.textEncrypted),
+    reactions: m.reactions || [],
+    parent: m.parentMessageId
+      ? parentMap.get(m.parentMessageId.toString())
+      : null,
   }));
+
   res.json(shaped);
 });
 
-// POST /conversations/:id/messages - send (save + realtime emit)
+// POST /conversations/:id/messages - send message (with optional parentMessageId)
 router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
   const convId = new mongoose.Types.ObjectId(req.params.id);
-  const { text } = req.body as { text: string };
+  const { text, parentMessageId } = req.body as {
+    text: string;
+    parentMessageId?: string;
+  };
   if (!text) return res.status(400).json({ error: "Text required" });
-  const msg = await Message.create({
+
+  const msgData: any = {
     conversationId: convId,
     senderId: new mongoose.Types.ObjectId(req.userId),
     textEncrypted: encrypt(text),
     status: "sent",
-  });
+  };
+  if (parentMessageId)
+    msgData.parentMessageId = new mongoose.Types.ObjectId(parentMessageId);
 
-  // shape payload for clients (decrypted text included to display immediately)
+  const msg = await Message.create(msgData);
+
   const payload = {
     _id: (msg._id as Types.ObjectId).toString(),
     conversationId: (convId as Types.ObjectId).toString(),
@@ -155,9 +179,9 @@ router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
     createdAt: msg.createdAt,
     status: msg.status,
     text,
+    parentMessageId: parentMessageId || null,
   };
 
-  // emit to the conversation room
   try {
     getIO().to(convId.toString()).emit("message:new", payload);
   } catch (e) {
@@ -167,7 +191,7 @@ router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
   res.status(201).json({ _id: msg._id, createdAt: msg.createdAt });
 });
 
-// POST /conversations/:id/delivered - mark all as delivered for requester
+// POST /conversations/:id/delivered
 router.post("/:id/delivered", authMiddleware, async (req: AuthRequest, res) => {
   const convId = new mongoose.Types.ObjectId(req.params.id);
   await Message.updateMany(
@@ -177,16 +201,45 @@ router.post("/:id/delivered", authMiddleware, async (req: AuthRequest, res) => {
   res.json({ ok: true });
 });
 
-// GET /conversations/search/all?q=term - naive search (decrypt messages server-side)
+// GET /conversations/:id/messages/search?q=term
+router.get(
+  "/:id/messages/search",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    const convId = new mongoose.Types.ObjectId(req.params.id);
+    const q = String(req.query.q || "").toLowerCase();
+    if (!q) return res.json([]);
+
+    const messages = await Message.find({ conversationId: convId })
+      .limit(500)
+      .lean();
+    const shaped = messages
+      .map((m) => ({ ...m, text: decrypt(m.textEncrypted) }))
+      .filter((m) => m.text.toLowerCase().includes(q))
+      .map((m) => ({
+        _id: m._id,
+        senderId: m.senderId,
+        createdAt: m.createdAt,
+        status: m.status,
+        text: m.text,
+      }));
+
+    res.json(shaped);
+  }
+);
+
+// GET /conversations/search/all?q=term
 router.get("/search/all", authMiddleware, async (req: AuthRequest, res) => {
   const q = String(req.query.q || "").toLowerCase();
   if (!q) return res.json([]);
+
   const myId = new mongoose.Types.ObjectId(req.userId);
   const convs = await Conversation.find(
     { participants: myId },
     { _id: 1 }
   ).lean();
   const convIds = convs.map((c) => c._id);
+
   const msgs = await Message.find({ conversationId: { $in: convIds } })
     .limit(500)
     .lean();
@@ -199,7 +252,46 @@ router.get("/search/all", authMiddleware, async (req: AuthRequest, res) => {
       createdAt: m.createdAt,
       text: m.text,
     }));
+
   res.json(results);
 });
+
+// POST /conversations/:id/messages/:msgId/reactions
+router.post(
+  "/:id/messages/:msgId/react",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    const { emoji } = req.body;
+    const userId = req.userId;
+    const msgId = req.params.msgId;
+    if (!emoji) return res.status(400).json({ error: "Emoji required" });
+
+    const msg = await Message.findById(msgId);
+    if (!msg) return res.status(404).json({ error: "Message not found" });
+
+    const existingIndex = msg.reactions?.findIndex(
+      (r) => r.userId.toString() === userId && r.emoji === emoji
+    );
+    if (existingIndex !== undefined && existingIndex > -1) {
+      msg.reactions!.splice(existingIndex, 1);
+    } else {
+      msg.reactions = msg.reactions || [];
+      msg.reactions.push({
+        userId: new mongoose.Types.ObjectId(userId),
+        emoji,
+      });
+    }
+
+    await msg.save();
+
+    try {
+      getIO()
+        .to(req.params.id)
+        .emit("message:react", { msgId, reactions: msg.reactions });
+    } catch {}
+
+    res.json({ msgId, reactions: msg.reactions });
+  }
+);
 
 export default router;

@@ -1,4 +1,4 @@
-import mongoose, { Schema, Document, Types } from 'mongoose';
+import mongoose, { Schema, Document, Types } from "mongoose";
 
 /**
  * A conversation can be a DM (2 participants) or Group (3+ participants).
@@ -11,7 +11,9 @@ export interface IConversation extends Document {
 
 const ConversationSchema = new Schema<IConversation>(
   {
-    participants: [{ type: Schema.Types.ObjectId, ref: 'User', required: true }],
+    participants: [
+      { type: Schema.Types.ObjectId, ref: "User", required: true },
+    ],
     isGroup: { type: Boolean, default: false },
     name: { type: String },
   },
@@ -21,4 +23,7 @@ const ConversationSchema = new Schema<IConversation>(
 // Helps list by membership quickly.
 ConversationSchema.index({ participants: 1 });
 
-export default mongoose.model<IConversation>('Conversation', ConversationSchema);
+export default mongoose.model<IConversation>(
+  "Conversation",
+  ConversationSchema
+);
