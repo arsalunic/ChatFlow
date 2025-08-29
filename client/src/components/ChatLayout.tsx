@@ -1,3 +1,4 @@
+// client/src/components/ChatLayout.tsx
 import React, { useEffect, useRef, useState } from "react";
 import api, { searchMessages } from "../services/api";
 import { io } from "socket.io-client";
@@ -17,6 +18,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
 
   const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 
+  // --- Utility: aggregate reactions by emoji ---
   const aggregateReactions = (reactions: any[]) => {
     const map: Record<
       string,
@@ -31,12 +33,14 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     return Object.values(map);
   };
 
+  // --- Load conversations ---
   const loadConvs = async () => {
     const r = await api.get("/conversations");
     setConvs(r.data);
     if (!sel && r.data[0]) selectConv(r.data[0]);
   };
 
+  // --- Select a conversation ---
   const selectConv = async (c: any) => {
     setSel(c);
     const r = await api.get(`/conversations/${c._id}/messages`);
@@ -44,17 +48,19 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     setChatSearch("");
   };
 
+  // --- Send message ---
   const send = async () => {
     if (!text.trim() || !sel) return;
     await api.post(`/conversations/${sel._id}/messages`, {
       text,
-      parentMessageId: replyingTo?._id,
+      replyTo: replyingTo?._id,
     });
     setText("");
     setReplyingTo(null);
     await selectConv(sel);
   };
 
+  // --- Start new chat ---
   const newChat = async () => {
     const who = prompt(
       "Start a chat with username(s), comma-separated. For group, include 2+."
@@ -80,10 +86,12 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     if (found) await selectConv(found);
   };
 
+  // --- Mark delivered ---
   const markDelivered = async () => {
     if (sel) await api.post(`/conversations/${sel._id}/delivered`);
   };
 
+  // --- Search messages ---
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const q = e.target.value;
     setChatSearch(q);
@@ -104,6 +112,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     }
   };
 
+  // --- React to message ---
   const reactToMessage = async (msgId: string, emoji: string) => {
     if (!sel) return;
 
@@ -142,21 +151,40 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
       );
   };
 
+  // --- Socket.io ---
   useEffect(() => {
     const token = localStorage.getItem("token");
     const s = io("http://localhost:3000", { path: "/ws", auth: { token } });
     socketRef.current = s;
 
     s.on("presence:update", async () => await loadConvs());
+
+    // When a new message is sent into the room, refresh the conversation & list
     s.on("message:new", async () => {
       if (sel) await selectConv(sel);
       await loadConvs();
     });
-    s.on("message:react", ({ msgId, reactions }: any) =>
+
+    // When server emits that messages were delivered, update local state
+    s.on("message:delivered", ({ conversationId, messageIds }: any) => {
+      // If the delivered event is for the currently open conversation
+      if (sel && sel._id === conversationId) {
+        setMsgs((prev) =>
+          prev.map((m) =>
+            messageIds.includes(m._id) ? { ...m, status: "delivered" } : m
+          )
+        );
+      }
+      // Update conversation list (lastMessage status summary)
+      loadConvs();
+    });
+
+    s.on("message:react", ({ msgId, reactions }: any) => {
       setMsgs((prev) =>
         prev.map((m) => (m._id === msgId ? { ...m, reactions } : m))
-      )
-    );
+      );
+    });
+
     s.on("typing", (typingUsername: string) => {
       if (typingUsername === username) return;
       setTypingUsers((prev) =>
@@ -170,7 +198,12 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
     });
 
     loadConvs();
-    return () => s.disconnect();
+    return () => {
+      s.disconnect();
+    };
+    // NOTE: we intentionally do not include `loadConvs` in dependency list
+    // to avoid re-creating socket unnecessarily. `sel` is included to
+    // ensure handler has access to the currently selected conv.
   }, [sel]);
 
   useEffect(() => {
@@ -196,6 +229,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
             </button>
           </div>
         </div>
+
         <div className="list">
           {convs.map((c) => (
             <div key={c._id} className="item" onClick={() => selectConv(c)}>
@@ -281,14 +315,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
                 onMouseLeave={() => setShowReactionsFor(null)}
               >
                 {m.parent && (
-                  <div
-                    className="parent-msg"
-                    style={{
-                      borderLeft: "2px solid gray",
-                      paddingLeft: 6,
-                      marginBottom: 4,
-                    }}
-                  >
+                  <div className="parent-msg">
                     <small>Replying to:</small>
                     <div className="parent-text">
                       {highlightText(m.parent.text)}
@@ -313,7 +340,7 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
                   {showReactionsFor === m._id && (
                     <span className="reaction-picker">
                       {EMOJIS.map((e) => (
-                        <span key={e} onClick={() => reactToMessage(m._id, e)}>
+                        <span key={e} onClick={() => reactToMessage(m._1d, e)}>
                           {e}
                         </span>
                       ))}
@@ -321,6 +348,9 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
                   )}
                 </div>
 
+                {isMine && replyingTo?._id === m._id && (
+                  <div className="replying">Replying...</div>
+                )}
                 {!isMine && (
                   <button onClick={() => setReplyingTo(m)}>Reply</button>
                 )}
