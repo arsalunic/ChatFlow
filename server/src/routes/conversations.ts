@@ -4,6 +4,7 @@ import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import User from "../models/User.js";
 import mongoose from "mongoose";
+import { Types } from "mongoose";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import { addUsersToRoom, getIO } from "../websocket.js"; // <--- import helpers
 
@@ -93,8 +94,8 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
 
   // make currently-connected sockets join the new room
   addUsersToRoom(
-    ids.map((i) => i.toString()),
-    conv._id.toString()
+    ids.map((i) => (i as Types.ObjectId).toString()),
+    (conv._id as Types.ObjectId).toString()
   );
 
   // populate participants for client convenience
@@ -107,7 +108,9 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
 
   // emit new conversation to participants (they will update list without reload)
   try {
-    getIO().to(conv._id.toString()).emit("conversation:new", populated);
+    getIO()
+      .to((conv._id as Types.ObjectId).toString())
+      .emit("conversation:new", populated);
   } catch (e) {
     // getIO may not be available during tests / startup; ignore safely
     console.warn("getIO not available when emitting conversation:new", e);
@@ -146,9 +149,9 @@ router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
 
   // shape payload for clients (decrypted text included to display immediately)
   const payload = {
-    _id: msg._id.toString(),
-    conversationId: convId.toString(),
-    senderId: msg.senderId.toString(),
+    _id: (msg._id as Types.ObjectId).toString(),
+    conversationId: (convId as Types.ObjectId).toString(),
+    senderId: (msg.senderId as Types.ObjectId).toString(),
     createdAt: msg.createdAt,
     status: msg.status,
     text,
