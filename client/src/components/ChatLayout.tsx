@@ -315,11 +315,18 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
                 onMouseLeave={() => setShowReactionsFor(null)}
               >
                 {m.parent && (
-                  <div className="parent-msg">
+                  <div
+                    className="parent-msg"
+                    style={{
+                      borderLeft: "3px solid #000000ff", // vertical bold line
+                      paddingLeft: 6,
+                      marginBottom: 4,
+                      fontSize: "0.85em",
+                      color: "#555",
+                    }}
+                  >
                     <small>Replying to:</small>
-                    <div className="parent-text">
-                      {highlightText(m.parent.text)}
-                    </div>
+                    <div>{highlightText(m.parent.text)}</div>
                   </div>
                 )}
                 <div>{highlightText(m.text)}</div>
@@ -368,9 +375,23 @@ export default function ChatLayout({ onLogout }: { onLogout: () => void }) {
           style={{ display: "flex", padding: "12px", alignItems: "center" }}
         >
           {replyingTo && (
-            <div className="reply-preview" style={{ marginBottom: 6 }}>
-              Replying to: {replyingTo.text}{" "}
-              <button onClick={() => setReplyingTo(null)}>x</button>
+            <div
+              className="reply-preview"
+              style={{
+                marginBottom: 6,
+                borderLeft: "4px solid #007bff", // blue vertical line
+                paddingLeft: 8,
+                fontSize: "0.9em",
+                color: "#444",
+              }}
+            >
+              <strong>Replying to:</strong> {replyingTo.text}
+              <button
+                onClick={() => setReplyingTo(null)}
+                style={{ marginLeft: 8, fontSize: "0.8em" }}
+              >
+                ×
+              </button>
             </div>
           )}
           <input
