@@ -1,3 +1,4 @@
+// server/src/routes/conversations.ts
 import { Router } from "express";
 import { authMiddleware, AuthRequest } from "../middleware/auth.js";
 import Conversation from "../models/Conversation.js";
@@ -6,7 +7,7 @@ import User from "../models/User.js";
 import mongoose from "mongoose";
 import { Types } from "mongoose";
 import { decrypt, encrypt } from "../utils/crypto.js";
-import { addUsersToRoom, getIO } from "../websocket.js";
+import { addUsersToRoom, getIO } from "../websocket.js"; // <--- import helpers
 
 const router = Router();
 
@@ -92,11 +93,13 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
 
   const conv = await Conversation.create({ participants: ids, isGroup, name });
 
+  // make currently-connected sockets join the new room
   addUsersToRoom(
     ids.map((i) => (i as Types.ObjectId).toString()),
     (conv._id as Types.ObjectId).toString()
   );
 
+  // populate participants for client convenience
   const populated = await Conversation.findById(conv._id)
     .populate({
       path: "participants",
@@ -104,11 +107,13 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     })
     .lean();
 
+  // emit new conversation to participants (they will update list without reload)
   try {
     getIO()
       .to((conv._id as Types.ObjectId).toString())
       .emit("conversation:new", populated);
   } catch (e) {
+    // getIO may not be available during tests / startup; ignore safely
     console.warn("getIO not available when emitting conversation:new", e);
   }
 
@@ -145,20 +150,17 @@ router.get("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
     text: decrypt(m.textEncrypted),
     reactions: m.reactions || [],
     parent: m.parentMessageId
-      ? parentMap.get(m.parentMessageId.toString())
+      ? parentMap.get((m.parentMessageId as any).toString())
       : null,
   }));
 
   res.json(shaped);
 });
 
-// POST /conversations/:id/messages - send message (with optional parentMessageId)
+// POST /conversations/:id/messages - send message (with optional replyTo)
 router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
   const convId = new mongoose.Types.ObjectId(req.params.id);
-  const { text, parentMessageId } = req.body as {
-    text: string;
-    parentMessageId?: string;
-  };
+  const { text, replyTo } = req.body as { text: string; replyTo?: string };
   if (!text) return res.status(400).json({ error: "Text required" });
 
   const msgData: any = {
@@ -167,19 +169,20 @@ router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
     textEncrypted: encrypt(text),
     status: "sent",
   };
-  if (parentMessageId)
-    msgData.parentMessageId = new mongoose.Types.ObjectId(parentMessageId);
+  if (replyTo) msgData.parentMessageId = new mongoose.Types.ObjectId(replyTo);
 
   const msg = await Message.create(msgData);
 
   const payload = {
     _id: (msg._id as Types.ObjectId).toString(),
-    conversationId: (convId as Types.ObjectId).toString(),
-    senderId: (msg.senderId as Types.ObjectId).toString(),
+    conversationId: convId.toString(),
+    senderId: msg.senderId.toString(),
     createdAt: msg.createdAt,
     status: msg.status,
     text,
-    parentMessageId: parentMessageId || null,
+    parentMessageId: msg.parentMessageId
+      ? msg.parentMessageId.toString()
+      : null,
   };
 
   try {
@@ -191,13 +194,37 @@ router.post("/:id/messages", authMiddleware, async (req: AuthRequest, res) => {
   res.status(201).json({ _id: msg._id, createdAt: msg.createdAt });
 });
 
-// POST /conversations/:id/delivered
+// POST /conversations/:id/delivered - mark all as delivered for requester
 router.post("/:id/delivered", authMiddleware, async (req: AuthRequest, res) => {
   const convId = new mongoose.Types.ObjectId(req.params.id);
+  // Update DB
   await Message.updateMany(
     { conversationId: convId, status: "sent" },
     { $set: { status: "delivered" } }
   );
+
+  // Fetch updated message ids so we can emit them in an event to clients
+  try {
+    const updated = await Message.find({
+      conversationId: convId,
+      status: "delivered",
+    })
+      .select("_id")
+      .lean();
+    const messageIds = updated.map((m) => m._id.toString());
+    // Emit the delivered event to the conversation room so all clients can update their UI
+    try {
+      getIO().to(convId.toString()).emit("message:delivered", {
+        conversationId: convId.toString(),
+        messageIds,
+      });
+    } catch (e) {
+      console.warn("getIO not available when emitting message:delivered", e);
+    }
+  } catch (e) {
+    console.warn("Error while emitting delivered messages", e);
+  }
+
   res.json({ ok: true });
 });
 
